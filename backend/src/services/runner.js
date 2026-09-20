@@ -1,0 +1,124 @@
+// Runs scrapes, one at a time, and writes the results to the database honestly:
+//   - price_history gets a row ONLY when the scrape succeeded and was validated
+//   - scrape_logs gets a row for EVERY run: success, retried or failed
+//
+// One at a time on purpose: each scrape opens a Chromium, and the free Render instance has
+// little memory. It also keeps the load on the (rate-limited) store low.
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, maxAttempts = 3, dueSlackMinutes = 10 }) {
+    // required lazily so tests can pass a fake scraper without loading Playwright
+    const scrapeFn = scrape || require("./scraper/retry").scrapeWithRetry;
+
+    const pending = new Set(); // product ids queued or running
+    let chain = Promise.resolve();
+
+    async function scrapeAndStore(product) {
+        const startedAt = new Date();
+        const productId = product.product_id;
+
+        let result = null;
+        let outcome;
+        let attempts;
+        let attemptLog;
+        let errorMessage = null;
+
+        try {
+            result = await scrapeFn(`${base}/product/${productId}`, maxAttempts);
+            attempts = result.attempts || 1;
+            outcome = result.outcome || (attempts > 1 ? "retried" : "success");
+            attemptLog = result.attemptLog || [];
+        } catch (err) {
+            outcome = "failed";
+            attemptLog = err.attemptLog || [];
+            attempts = attemptLog.length || maxAttempts;
+            errorMessage = err.message;
+        }
+
+        // 1. price history: only for a validated success
+        if (result) {
+            try {
+                await store.insertHistory({
+                    product_id: productId,
+                    price: result.price,
+                    mrp: result.mrp ?? null,
+                    discount_label: result.discount ?? null,
+                    in_stock: result.stock === "in_stock",
+                    stock_qty: result.stockQty ?? null,
+                    seller: result.seller ?? null,
+                    delivery: result.delivery ?? null,
+                    scraped_at: new Date().toISOString()
+                });
+            } catch (err) {
+                // the scrape worked but the value was not saved: say so, do not pretend success
+                outcome = "failed";
+                errorMessage = `Scraped OK but saving the price failed: ${err.message}`;
+                result = null;
+            }
+        }
+
+        // 2. the log always gets a row
+        const finishedAt = new Date();
+        try {
+            await store.insertLog({
+                product_id: productId,
+                started_at: startedAt.toISOString(),
+                finished_at: finishedAt.toISOString(),
+                outcome,
+                attempts,
+                duration_ms: finishedAt - startedAt,
+                error_message: errorMessage,
+                attempt_log: attemptLog,
+                price: result ? result.price : null
+            });
+        } catch (err) {
+            log(`could not write scrape log for product ${productId}: ${err.message}`);
+        }
+
+        log(`scrape #${productId}: ${outcome} (${attempts} attempt${attempts === 1 ? "" : "s"})${errorMessage ? " - " + errorMessage : ""}`);
+        return { outcome, attempts, errorMessage };
+    }
+
+    // put a product in the queue (ignored if it is already queued or running)
+    function enqueue(product) {
+        if (pending.has(product.product_id)) return false;
+        pending.add(product.product_id);
+        chain = chain.then(async () => {
+            try {
+                await scrapeAndStore(product);
+            } catch (err) {
+                log(`unexpected error scraping #${product.product_id}: ${err.message}`);
+            } finally {
+                pending.delete(product.product_id);
+            }
+            await sleep(pauseMs);
+        });
+        return true;
+    }
+
+    function isDue(p, now = Date.now()) {
+        if (p.active === false) return false;
+        if (!p.last_attempt_at) return true;
+        const dueAfterMs = ((p.interval_minutes || 120) - dueSlackMinutes) * 60_000;
+        return now - new Date(p.last_attempt_at).getTime() >= dueAfterMs;
+    }
+
+    // called by the cron endpoint: queue every product whose interval has passed
+    async function runCycle({ force = false } = {}) {
+        const tracked = await store.listTracked();
+        const due = force ? tracked.filter((p) => p.active !== false) : tracked.filter((p) => isDue(p));
+        const queued = due.filter((p) => enqueue(p)).length;
+        return { tracked: tracked.length, due: due.length, queued };
+    }
+
+    return {
+        enqueue,
+        runCycle,
+        isPending: (id) => pending.has(id),
+        pendingCount: () => pending.size,
+        idle: () => chain // resolves when the queue is empty (used in tests)
+    };
+}
+
+module.exports = { createRunner };
