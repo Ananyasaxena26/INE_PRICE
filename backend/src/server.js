@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
+const { snapshot: memorySnapshot } = require("./services/memory");
 
 // constant-time comparison of the cron secret
 function secretOk(provided, expected) {
@@ -35,7 +36,7 @@ function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, 
 
     // ---------------------------------------------------------------- health
     app.get("/api/health", (req, res) => {
-        res.json({ ok: true, queued: runner.pendingCount(), time: new Date().toISOString() });
+        res.json({ ok: true, queued: runner.pendingCount(), memory: memorySnapshot(), time: new Date().toISOString() });
     });
 
     // ---------------------------------------------------------------- search

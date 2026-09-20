@@ -5,6 +5,8 @@
 // One at a time on purpose: each scrape opens a Chromium, and the free Render instance has
 // little memory. It also keeps the load on the (rate-limited) store low.
 
+const { startPeakSampler } = require("./memory");
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, maxAttempts = 3, dueSlackMinutes = 10 }) {
@@ -24,6 +26,7 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
         let attemptLog;
         let errorMessage = null;
 
+        const memory = startPeakSampler();
         try {
             result = await scrapeFn(`${base}/product/${productId}`, maxAttempts);
             attempts = result.attempts || 1;
@@ -35,6 +38,8 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
             attempts = attemptLog.length || maxAttempts;
             errorMessage = err.message;
         }
+
+        const peakMb = memory.stop();
 
         // 1. price history: only for a validated success
         if (result) {
@@ -76,7 +81,10 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
             log(`could not write scrape log for product ${productId}: ${err.message}`);
         }
 
-        log(`scrape #${productId}: ${outcome} (${attempts} attempt${attempts === 1 ? "" : "s"})${errorMessage ? " - " + errorMessage : ""}`);
+        log(
+            `scrape #${productId}: ${outcome} (${attempts} attempt${attempts === 1 ? "" : "s"})` +
+            `${peakMb != null ? `, peak memory ~${peakMb} MB` : ""}${errorMessage ? " - " + errorMessage : ""}`
+        );
         return { outcome, attempts, errorMessage };
     }
 
