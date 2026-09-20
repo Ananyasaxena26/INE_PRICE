@@ -11,7 +11,7 @@ function secretOk(provided, expected) {
     return crypto.timingSafeEqual(a, b);
 }
 
-function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, frontendOrigin = "", maxTracked = 25, manualCooldownSeconds = 60 }) {
+function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, frontendOrigin = "", maxTracked = 25, manualCooldownSeconds = 60, scrapeAllCooldownSeconds = 600 }) {
     const app = express();
     app.use(express.json());
 
@@ -86,12 +86,33 @@ function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, 
         if (!product) return res.status(404).json({ error: "No such product in the store" });
 
         const row = await store.trackProduct(product);
-        const queued = runner.enqueue(row); // first scrape right away, so the chart is not empty
+        const queued = runner.enqueue(row, "first"); // first scrape right away, so the chart is not empty
         res.status(201).json({ product: row, firstScrape: queued ? "queued" : "already queued" });
     }));
 
     app.get("/api/tracked", wrap(async (req, res) => {
-        res.json(await store.listTracked());
+        const rows = await store.listTracked();
+        let trend = new Map();
+        try {
+            trend = await store.recentPrices(rows.map((r) => r.product_id));
+        } catch (e) {
+            console.error("recentPrices failed (dashboard trend lines will be empty):", e.message);
+        }
+        res.json(rows.map((r) => ({ ...r, recent_prices: trend.get(r.product_id) || [] })));
+    }));
+
+    // "Refresh all" button: queue every tracked product. Cooldown so it cannot hammer the store.
+    let lastScrapeAll = 0;
+    app.post("/api/scrape-all", wrap(async (req, res) => {
+        const waitMs = scrapeAllCooldownSeconds * 1000 - (Date.now() - lastScrapeAll);
+        if (waitMs > 0) {
+            return res.status(429).json({ error: "Everything was refreshed very recently", retryAfterSeconds: Math.ceil(waitMs / 1000) });
+        }
+        // the dashboard says whether a person pressed the button (manual) or it noticed old data (auto)
+        const trigger = req.body && req.body.trigger === "auto" ? "auto" : "manual";
+        const summary = await runner.runCycle({ trigger });
+        lastScrapeAll = Date.now();
+        res.status(202).json(summary);
     }));
 
     app.delete("/api/track/:productId", wrap(async (req, res) => {
@@ -131,7 +152,7 @@ function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, 
                 return res.status(429).json({ error: "Scraped very recently", retryAfterSeconds: Math.ceil(waitMs / 1000) });
             }
         }
-        runner.enqueue(product);
+        runner.enqueue(product, "manual");
         res.status(202).json({ status: "queued" });
     }));
 
@@ -141,7 +162,7 @@ function createApp({ store, runner, catalogSync, fetchStoreProduct, cronSecret, 
     const cronScrape = [
         requireCron,
         wrap(async (req, res) => {
-            const summary = await runner.runCycle({ force: req.query.force === "1" });
+            const summary = await runner.runCycle({ onlyDue: req.query.due === "1" });
             res.status(202).json(summary);
         })
     ];

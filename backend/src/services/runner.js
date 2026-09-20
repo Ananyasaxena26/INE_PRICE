@@ -13,10 +13,10 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
     // required lazily so tests can pass a fake scraper without loading Playwright
     const scrapeFn = scrape || require("./scraper/retry").scrapeWithRetry;
 
-    const pending = new Set(); // product ids queued or running
+    const pending = new Map(); // product id -> what asked for the scrape; queued or running
     let chain = Promise.resolve();
 
-    async function scrapeAndStore(product) {
+    async function scrapeAndStore(product, trigger) {
         const startedAt = new Date();
         const productId = product.product_id;
 
@@ -67,6 +67,7 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
         const finishedAt = new Date();
         try {
             await store.insertLog({
+                trigger: trigger || null, // scheduled | manual | auto | first
                 product_id: productId,
                 started_at: startedAt.toISOString(),
                 finished_at: finishedAt.toISOString(),
@@ -89,12 +90,14 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
     }
 
     // put a product in the queue (ignored if it is already queued or running)
-    function enqueue(product) {
+    // trigger says WHY this scrape happens, and is written to the log:
+    //   scheduled (the cron job), manual (a button), auto (dashboard found old data), first (just started tracking)
+    function enqueue(product, trigger = "manual") {
         if (pending.has(product.product_id)) return false;
-        pending.add(product.product_id);
+        pending.set(product.product_id, trigger);
         chain = chain.then(async () => {
             try {
-                await scrapeAndStore(product);
+                await scrapeAndStore(product, trigger);
             } catch (err) {
                 log(`unexpected error scraping #${product.product_id}: ${err.message}`);
             } finally {
@@ -112,11 +115,15 @@ function createRunner({ store, base, scrape, log = console.log, pauseMs = 2000, 
         return now - new Date(p.last_attempt_at).getTime() >= dueAfterMs;
     }
 
-    // called by the cron endpoint: queue every product whose interval has passed
-    async function runCycle({ force = false } = {}) {
+    // Called by the cron endpoint. The cron job itself IS the schedule (every 2 hours), so by default every
+    // active tracked product is queued. Filtering by "last attempt" would let a manual scrape made shortly
+    // before the cron run push a product's next scrape out to the run after (up to 4 hours old).
+    // Pass onlyDue: true to queue just the products whose own interval has passed.
+    async function runCycle({ onlyDue = false, trigger = "scheduled" } = {}) {
         const tracked = await store.listTracked();
-        const due = force ? tracked.filter((p) => p.active !== false) : tracked.filter((p) => isDue(p));
-        const queued = due.filter((p) => enqueue(p)).length;
+        const active = tracked.filter((p) => p.active !== false);
+        const due = onlyDue ? active.filter((p) => isDue(p)) : active;
+        const queued = due.filter((p) => enqueue(p, trigger)).length;
         return { tracked: tracked.length, due: due.length, queued };
     }
 

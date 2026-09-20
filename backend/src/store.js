@@ -95,7 +95,39 @@ function createStore({ url, key }) {
         },
 
         async insertLog(row) {
-            ok(await db.from("scrape_logs").insert(row), "insertLog");
+            const first = await db.from("scrape_logs").insert(row);
+            // if the "trigger" column has not been added to the table yet, save the log without it rather than lose it
+            if (first.error && /trigger/i.test(first.error.message) && "trigger" in row) {
+                const { trigger, ...withoutTrigger } = row;
+                ok(await db.from("scrape_logs").insert(withoutTrigger), "insertLog");
+                return;
+            }
+            ok(first, "insertLog");
+        },
+
+        // last few prices per product (oldest first), for the small trend lines on the dashboard.
+        // One query: the most recent 1000 history rows across the given products, grouped in memory.
+        async recentPrices(productIds, perProduct = 12) {
+            const out = new Map();
+            if (!productIds.length) return out;
+            const rows = ok(
+                await db
+                    .from("price_history")
+                    .select("product_id,price,scraped_at")
+                    .in("product_id", productIds)
+                    .order("scraped_at", { ascending: false })
+                    .limit(1000),
+                "recentPrices"
+            );
+            for (const r of rows) {
+                const list = out.get(r.product_id) || [];
+                if (list.length < perProduct) {
+                    list.push(r.price);
+                    out.set(r.product_id, list);
+                }
+            }
+            for (const [id, list] of out) out.set(id, list.reverse());
+            return out;
         },
 
         async getHistory(productId, limit = 500) {

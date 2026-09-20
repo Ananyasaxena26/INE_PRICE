@@ -5,6 +5,7 @@ const { attachNetworkLogging } = require("./networkLogger");
 const { handleCookies } = require("./cookies");
 const { attachPageDiagnostics, probeBeforeClick, clickAndConfirmReveal } = require("./revealProbe");
 const { humanRevealClick } = require("./humanClick");
+const { applySimulation } = require("./simulate");
 
 // Set DEBUG_SCRAPER=1 to see cookie / mouse / probe / network details. Off by default.
 const debug = process.env.DEBUG_SCRAPER === "1" ? console.log : () => {};
@@ -13,6 +14,9 @@ const debug = process.env.DEBUG_SCRAPER === "1" ? console.log : () => {};
 // CPU, so pages load and scripts run much slower there and the same waits need to be longer (set 2).
 const SCALE = parseFloat(process.env.TIMEOUT_SCALE) || 1;
 const T = (ms) => Math.round(ms * SCALE);
+
+// counts attempts within one retry sequence; only used by the SIMULATE demo mode
+let simulationAttempt = 0;
 
 /* ---------------------------------------------------------------------------------------
    Reading the price block.
@@ -230,11 +234,10 @@ function parseSnapshot(s) {
 
 // A click sometimes does not start the reveal, for example because the page's script is not ready yet
 // on a slow machine. Try again on the same page before giving up on the whole page load.
-async function revealWithRetries(page, doClick, { tries = 3, challengeWindowMs = T(5000) } = {}) {
+async function revealWithRetries(page, doClick, { tries = 3, challengeWindowMs = T(5000), priceWindowMs = T(25000) } = {}) {
     for (let i = 1; i <= tries; i++) {
         try {
-            await clickAndConfirmReveal(page, doClick, { timeout: challengeWindowMs });
-            return;
+            return await clickAndConfirmReveal(page, doClick, { timeout: challengeWindowMs, priceTimeout: priceWindowMs });
         } catch (e) {
             const notStarted = /did not fire \/api\/challenge/.test(e.message);
             if (!notStarted || i === tries) throw e;
@@ -242,6 +245,16 @@ async function revealWithRetries(page, doClick, { tries = 3, challengeWindowMs =
             await page.waitForTimeout(1000);
         }
     }
+}
+
+// Turns a list of [phaseName, timestamp] marks into "launch 1.8s | page load 3.1s | ..." (where the time went)
+function formatTimings(marks) {
+    const parts = [];
+    for (let i = 1; i < marks.length; i++) {
+        parts.push(`${marks[i][0]} ${((marks[i][1] - marks[i - 1][1]) / 1000).toFixed(1)}s`);
+    }
+    parts.push(`total ${((marks[marks.length - 1][1] - marks[0][1]) / 1000).toFixed(1)}s`);
+    return parts.join(" | ");
 }
 
 // Prints the raw HTML of the price area (only used when a value looks wrong), so the exact
@@ -259,9 +272,15 @@ async function dumpPriceBlock(page) {
 }
 
 async function scrapeProduct(url) {
+    const marks = [["start", Date.now()]];
+    const mark = (name) => marks.push([name, Date.now()]);
     const { browser, page } = await createBrowser();
+    mark("browser launch");
 
     try {
+        simulationAttempt += 1;
+        await applySimulation(page, { mode: process.env.SIMULATE, attempt: simulationAttempt });
+
         const api = attachNetworkLogging(page); // silent capture of product / price / layout responses
         attachPageDiagnostics(page, debug);
 
@@ -271,10 +290,12 @@ async function scrapeProduct(url) {
 
         console.log(`Opening: ${url}`);
         await page.goto(url, { waitUntil: "networkidle", timeout: T(30000) });
+        mark("page load");
 
         // 1. Cookies
         const cookieResult = await handleCookies(page, { log: debug, timeout: T(8000) });
         console.log(`Cookies: ${cookieResult.status}`);
+        mark("cookie banner");
 
         // 2. Find Price Block & Reveal Button
         const priceBlock = page.locator("div.price-block");
@@ -284,12 +305,23 @@ async function scrapeProduct(url) {
         // 3. Hover + press like a person, and confirm the reveal flow really started
         console.log("Revealing price...");
         await probeBeforeClick(page, undefined, debug);
-        await revealWithRetries(page, () => humanRevealClick(page, priceBlock, revealButton, debug));
+        const reveal = await revealWithRetries(page, () => humanRevealClick(page, priceBlock, revealButton, debug));
+
+        mark("hover + click + API");
 
         // 4. Wait for the success state, then for the price to stop updating
-        await page.locator("div.price-block.price-success").waitFor({ state: "visible", timeout: T(10000) });
+        try {
+            await page.locator("div.price-block.price-success").waitFor({ state: "visible", timeout: T(10000) });
+        } catch {
+            throw new Error(
+                `Price did not appear within ${T(10000) / 1000}s (the price API's first answer was HTTP ${reveal && reveal.priceStatus})`
+            );
+        }
+        mark("price shown");
         const snapshot = await readSettledPriceBlock(page, api.layout, { timeout: T(10000) });
+        mark("price settled");
         console.log("Price revealed.");
+        console.log(`Timing: ${formatTimings(marks)}`);
 
         // optional proof: picture of the price block at the moment the value was read
         // (set SCREENSHOT_DIR, testManyProducts.js does this for you)
@@ -340,6 +372,7 @@ async function scrapeProduct(url) {
         const p = api.product || {};
 
         // 6. Final result
+        simulationAttempt = 0;
         return {
             productId,
             status: "success",

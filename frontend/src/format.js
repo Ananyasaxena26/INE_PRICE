@@ -18,17 +18,41 @@ export function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-// when the next scheduled scrape is expected (last attempt + interval)
-export function nextScrape(lastAttemptIso, intervalMinutes) {
-  if (!lastAttemptIso) return "waiting for first scrape";
-  const ms = new Date(lastAttemptIso).getTime() + (intervalMinutes || 120) * 60000 - Date.now();
-  if (ms <= 0) return "due now";
-  const m = Math.round(ms / 60000);
-  return m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)}h ${m % 60}m`;
+// The cron job runs at minute 0 of every 2nd hour, Asia/Kolkata (UTC+5:30): 00:00, 02:00, 04:00 ... IST
+export function nextScheduledRun(now = Date.now()) {
+  const IST = 5.5 * 3600 * 1000;
+  const STEP = 2 * 3600 * 1000;
+  const shifted = now + IST; // wall-clock milliseconds in IST
+  return Math.floor(shifted / STEP) * STEP + STEP - IST;
+}
+
+export function nextScrapeParts() {
+  const at = nextScheduledRun();
+  const m = Math.max(1, Math.round((at - Date.now()) / 60000));
+  const when = new Date(at).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" });
+  const inText = m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)}h ${m % 60}m`;
+  return { inText, when: `${when} IST` };
+}
+
+export function nextScrape() {
+  const { inText, when } = nextScrapeParts();
+  return `${inText} (${when})`;
 }
 
 export function stockLabel(inStock, qty) {
-  if (inStock === true) return qty != null ? `In stock (${qty})` : "In stock";
+  if (inStock === true) return qty != null ? `In stock · ${qty}` : "In stock";
   if (inStock === false) return "Out of stock";
   return "—";
 }
+
+// change between the last two readings (values are oldest first)
+export function priceChange(values) {
+  if (!values || values.length < 2) return null;
+  const prev = values[values.length - 2];
+  const cur = values[values.length - 1];
+  if (!prev) return null;
+  const pct = ((cur - prev) / prev) * 100;
+  return { pct, dir: pct > 0.05 ? "up" : pct < -0.05 ? "down" : "flat" };
+}
+
+export const belowMrp = (price, mrp) => (price && mrp && mrp > price ? Math.round((1 - price / mrp) * 100) : null);

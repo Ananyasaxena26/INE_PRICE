@@ -30,5 +30,7 @@ export const api = {
   untrack: (productId) => request(`/api/track/${productId}`, { method: "DELETE" }),
   history: (productId) => request(`/api/products/${productId}/history?limit=500`),
   logs: (productId) => request(`/api/products/${productId}/logs?limit=100`),
-  scrapeNow: (productId) => request(`/api/products/${productId}/scrape`, { method: "POST" })
+  scrapeNow: (productId) => request(`/api/products/${productId}/scrape`, { method: "POST" }),
+  // trigger tells the log why it happened: "manual" (button) or "auto" (dashboard found old data)
+  scrapeAll: (trigger = "manual") => request("/api/scrape-all", { method: "POST", body: JSON.stringify({ trigger }) })
 };

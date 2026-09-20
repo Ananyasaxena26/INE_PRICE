@@ -2,6 +2,8 @@ import { Fragment, useState } from "react";
 import Badge from "./Badge";
 import { dateTime, inr, seconds } from "../format";
 
+const TRIGGERS = { scheduled: "Scheduled", manual: "Manual", auto: "Auto-refresh", first: "First scrape" };
+
 export default function ScrapeLog({ logs }) {
   const [open, setOpen] = useState(null);
 
@@ -13,6 +15,7 @@ export default function ScrapeLog({ logs }) {
         <thead>
           <tr>
             <th>Time</th>
+            <th>Trigger</th>
             <th>Outcome</th>
             <th>Attempts</th>
             <th>Duration</th>
@@ -25,6 +28,7 @@ export default function ScrapeLog({ logs }) {
             <Fragment key={l.id}>
               <tr className="clickable" onClick={() => setOpen(open === l.id ? null : l.id)}>
                 <td>{dateTime(l.started_at)}</td>
+                <td>{TRIGGERS[l.trigger] || "—"}</td>
                 <td>
                   <Badge outcome={l.outcome} />
                 </td>
@@ -35,7 +39,7 @@ export default function ScrapeLog({ logs }) {
               </tr>
               {open === l.id && (
                 <tr className="attempts-row">
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <strong>Every attempt in this run</strong>
                     <ol>
                       {(l.attempt_log || []).map((a) => (

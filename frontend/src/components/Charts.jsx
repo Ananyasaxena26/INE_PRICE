@@ -1,4 +1,4 @@
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { inr } from "../format";
 
 const shortTime = (t) =>
@@ -12,19 +12,27 @@ const toPoints = (history) =>
     stock: h.stock_qty
   }));
 
+const axis = { fontSize: 12, stroke: "#94a3b8" };
+
 export function PriceChart({ history }) {
   const data = toPoints(history);
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-        <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} tickFormatter={shortTime} fontSize={12} />
-        <YAxis domain={["auto", "auto"]} tickFormatter={(v) => `₹${v.toLocaleString("en-IN")}`} width={72} fontSize={12} />
+    <ResponsiveContainer width="100%" height={280}>
+      <ComposedChart data={data} margin={{ top: 10, right: 16, bottom: 0, left: 8 }}>
+        <defs>
+          <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0f766e" stopOpacity={0.28} />
+            <stop offset="100%" stopColor="#0f766e" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#ece9e1" />
+        <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} tickFormatter={shortTime} {...axis} />
+        <YAxis domain={["auto", "auto"]} tickFormatter={(v) => `₹${v.toLocaleString("en-IN")}`} width={78} {...axis} />
         <Tooltip labelFormatter={shortTime} formatter={(v, name) => [inr(v), name]} />
         <Legend />
-        <Line type="monotone" dataKey="price" name="Price" stroke="#2563eb" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-        <Line type="monotone" dataKey="mrp" name="MRP" stroke="#9ca3af" strokeDasharray="5 4" dot={false} isAnimationActive={false} />
-      </LineChart>
+        <Area type="monotone" dataKey="price" name="Price" stroke="#0f766e" strokeWidth={2.5} fill="url(#priceFill)" dot={{ r: 3 }} isAnimationActive={false} />
+        <Line type="monotone" dataKey="mrp" name="MRP" stroke="#94a3b8" strokeDasharray="5 4" dot={false} isAnimationActive={false} />
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
@@ -34,13 +42,19 @@ export function StockChart({ history }) {
   if (!data.length) return <p className="muted">No stock quantity recorded yet.</p>;
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-        <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} tickFormatter={shortTime} fontSize={12} />
-        <YAxis allowDecimals={false} width={72} fontSize={12} />
+      <ComposedChart data={data} margin={{ top: 10, right: 16, bottom: 0, left: 8 }}>
+        <defs>
+          <linearGradient id="stockFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#d97706" stopOpacity={0.25} />
+            <stop offset="100%" stopColor="#d97706" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#ece9e1" />
+        <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} tickFormatter={shortTime} {...axis} />
+        <YAxis allowDecimals={false} width={78} {...axis} />
         <Tooltip labelFormatter={shortTime} formatter={(v) => [v, "Units in stock"]} />
-        <Line type="stepAfter" dataKey="stock" name="Units in stock" stroke="#059669" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-      </LineChart>
+        <Area type="stepAfter" dataKey="stock" name="Units in stock" stroke="#d97706" strokeWidth={2} fill="url(#stockFill)" dot={{ r: 3 }} isAnimationActive={false} />
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }

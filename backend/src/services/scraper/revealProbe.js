@@ -64,10 +64,10 @@ async function probeBeforeClick(page, point, log = console.log) {
  *   - no /price response => flow started but the API was slow or failed
  * Returns { priceStatus } so a 4xx/5xx can be logged as a failed attempt.
  */
-async function clickAndConfirmReveal(page, clickFn, { timeout = 8_000 } = {}) {
+async function clickAndConfirmReveal(page, clickFn, { timeout = 8_000, priceTimeout = timeout * 2 } = {}) {
   const challenge = page.waitForRequest((r) => r.url().includes("/api/challenge"), { timeout });
   const price = page.waitForResponse((r) => /\/api\/products\/\d+\/price/.test(r.url()), {
-    timeout: timeout * 2,
+    timeout: priceTimeout, // the store's price API can be slow on purpose: allow much longer than the click window
   });
   challenge.catch(() => {}); // avoid unhandled rejections if clickFn throws first
   price.catch(() => {});
