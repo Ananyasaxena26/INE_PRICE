@@ -9,6 +9,11 @@ const { humanRevealClick } = require("./humanClick");
 // Set DEBUG_SCRAPER=1 to see cookie / mouse / probe / network details. Off by default.
 const debug = process.env.DEBUG_SCRAPER === "1" ? console.log : () => {};
 
+// All waits are multiplied by TIMEOUT_SCALE. 1 on a laptop; the free Render instance has very little
+// CPU, so pages load and scripts run much slower there and the same waits need to be longer (set 2).
+const SCALE = parseFloat(process.env.TIMEOUT_SCALE) || 1;
+const T = (ms) => Math.round(ms * SCALE);
+
 /* ---------------------------------------------------------------------------------------
    Reading the price block.
 
@@ -223,6 +228,22 @@ function parseSnapshot(s) {
     };
 }
 
+// A click sometimes does not start the reveal, for example because the page's script is not ready yet
+// on a slow machine. Try again on the same page before giving up on the whole page load.
+async function revealWithRetries(page, doClick, { tries = 3, challengeWindowMs = T(5000) } = {}) {
+    for (let i = 1; i <= tries; i++) {
+        try {
+            await clickAndConfirmReveal(page, doClick, { timeout: challengeWindowMs });
+            return;
+        } catch (e) {
+            const notStarted = /did not fire \/api\/challenge/.test(e.message);
+            if (!notStarted || i === tries) throw e;
+            debug(`reveal click ${i} did not start the flow, trying again`);
+            await page.waitForTimeout(1000);
+        }
+    }
+}
+
 // Prints the raw HTML of the price area (only used when a value looks wrong), so the exact
 // structure can be inspected.
 async function dumpPriceBlock(page) {
@@ -249,25 +270,25 @@ async function scrapeProduct(url) {
         const productId = productIdMatch ? parseInt(productIdMatch[1], 10) : null;
 
         console.log(`Opening: ${url}`);
-        await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+        await page.goto(url, { waitUntil: "networkidle", timeout: T(30000) });
 
         // 1. Cookies
-        const cookieResult = await handleCookies(page, { log: debug, timeout: 8000 });
+        const cookieResult = await handleCookies(page, { log: debug, timeout: T(8000) });
         console.log(`Cookies: ${cookieResult.status}`);
 
         // 2. Find Price Block & Reveal Button
         const priceBlock = page.locator("div.price-block");
         const revealButton = page.locator("button.btn-primary[aria-label*='Reveal']");
-        await revealButton.waitFor({ state: "visible", timeout: 8000 });
+        await revealButton.waitFor({ state: "visible", timeout: T(8000) });
 
         // 3. Hover + press like a person, and confirm the reveal flow really started
         console.log("Revealing price...");
         await probeBeforeClick(page, undefined, debug);
-        await clickAndConfirmReveal(page, () => humanRevealClick(page, priceBlock, revealButton, debug));
+        await revealWithRetries(page, () => humanRevealClick(page, priceBlock, revealButton, debug));
 
         // 4. Wait for the success state, then for the price to stop updating
-        await page.locator("div.price-block.price-success").waitFor({ state: "visible", timeout: 10000 });
-        const snapshot = await readSettledPriceBlock(page, api.layout);
+        await page.locator("div.price-block.price-success").waitFor({ state: "visible", timeout: T(10000) });
+        const snapshot = await readSettledPriceBlock(page, api.layout, { timeout: T(10000) });
         console.log("Price revealed.");
 
         // optional proof: picture of the price block at the moment the value was read
@@ -406,5 +427,6 @@ module.exports = {
     // exported for tests
     readPriceBlockInPage,
     readSettledPriceBlock,
-    parseSnapshot
+    parseSnapshot,
+    revealWithRetries
 };
